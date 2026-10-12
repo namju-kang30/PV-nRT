@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import {
   ArrowUpRight,
   ArrowRight,
@@ -206,6 +206,7 @@ function Piston({ state, params, process, running }) {
 }
 
 function PVChart({ params, process, progress, enlarged = false }) {
+  const clipId = useId();
   const points = Array.from({ length: 101 }, (_, i) =>
     stateAt({ ...params, process }, i / 100),
   );
@@ -228,13 +229,35 @@ function PVChart({ params, process, progress, enlarged = false }) {
   const active = points.filter((_, i) => i / 100 <= progress);
   active.push(current);
   const area = `${path(active)} L ${x(current.V)} ${height - bottom} L ${x(initial.V)} ${height - bottom} Z`;
+  // Extend each endpoint's isotherm across the visible domain, P = nRT / V.
+  // Starting at the top boundary avoids the singularity at V = 0.
+  const isotherm = (temperature) => {
+    const startV = (params.n * R * temperature) / (maxP * 1000);
+    const endV = maxV / 1000;
+    return path(
+      Array.from({ length: 161 }, (_, i) => {
+        const V = startV + ((endV - startV) * i) / 160;
+        return { V, P: (params.n * R * temperature) / V };
+      }),
+    );
+  };
   return (
     <svg
       className={`pv-chart ${enlarged ? "enlarged" : ""}`}
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={`압력 부피 그래프. 초기 ${fmt(initial.V * 1000)} L, ${fmt(initial.P / 1000)} kPa. 현재 ${fmt(current.V * 1000)} L, ${fmt(current.P / 1000)} kPa. 주황 영역은 진행한 구간의 일입니다.`}
+      aria-label={`압력 부피 그래프. 초기 ${fmt(initial.V * 1000)} L, ${fmt(initial.P / 1000)} kPa. 현재 ${fmt(current.V * 1000)} L, ${fmt(current.P / 1000)} kPa. 초기 온도 ${fmt(initial.T)} K와 최종 온도 ${fmt(final.T)} K의 등온선을 표시합니다. 주황 영역은 진행한 구간의 일입니다.`}
     >
+      <defs>
+        <clipPath id={clipId}>
+          <rect
+            x={left}
+            y={top}
+            width={width - left - right}
+            height={height - top - bottom}
+          />
+        </clipPath>
+      </defs>
       {[0, 1, 2, 3, 4].map((i) => (
         <g key={i}>
           <line
@@ -288,6 +311,26 @@ function PVChart({ params, process, progress, enlarged = false }) {
       {process !== "isochoric" && (
         <path d={area} fill="#ff8c45" opacity=".17" />
       )}
+      <g clipPath={`url(#${clipId})`}>
+        <path
+          data-isotherm="initial"
+          data-temperature={initial.T}
+          d={isotherm(initial.T)}
+          fill="none"
+          stroke="#8c959d"
+          strokeWidth="1.5"
+          strokeDasharray="4 4"
+        />
+        <path
+          data-isotherm="final"
+          data-temperature={final.T}
+          d={isotherm(final.T)}
+          fill="none"
+          stroke="#bb8b6b"
+          strokeWidth="1.5"
+          strokeDasharray="9 5"
+        />
+      </g>
       <path
         d={path(points)}
         fill="none"
@@ -297,6 +340,7 @@ function PVChart({ params, process, progress, enlarged = false }) {
       />
       <path d={path(active)} fill="none" stroke="#ff8c45" strokeWidth="2.5" />
       <circle
+        data-state="initial"
         cx={x(initial.V)}
         cy={y(initial.P)}
         r="4.5"
@@ -313,6 +357,7 @@ function PVChart({ params, process, progress, enlarged = false }) {
         초기
       </text>
       <circle
+        data-state="final"
         cx={x(final.V)}
         cy={y(final.P)}
         r="4.5"
@@ -332,6 +377,72 @@ function PVChart({ params, process, progress, enlarged = false }) {
       />
       <circle cx={x(current.V)} cy={y(current.P)} r="4" fill="#ff8c45" />
     </svg>
+  );
+}
+
+function PVGraph({ params, process, progress, enlarged = false }) {
+  const initial = stateAt({ ...params, process }, 0);
+  const final = stateAt({ ...params, process }, 1);
+  const current = stateAt({ ...params, process }, progress);
+  const sameTemperature = Math.abs(initial.T - final.T) < 1e-7;
+  return (
+    <>
+      <PVChart
+        params={params}
+        process={process}
+        progress={progress}
+        enlarged={enlarged}
+      />
+      <div className="graph-legend">
+        <span>
+          <i />
+          실험 경로
+        </span>
+        <span>
+          <i className="area" />
+          기체가 한 일 W
+        </span>
+        <span className="graph-note">
+          {process === "isochoric" ? "ΔV = 0 → W = 0" : "W = ∫ P dV"}
+        </span>
+      </div>
+      <div className="isotherm-legend" aria-label="등온선 온도">
+        <span>
+          <i className="initial-isotherm" />
+          초기 등온선 <b>{fmt(initial.T)} K</b>
+        </span>
+        <span>
+          <i className="final-isotherm" />
+          최종 등온선 <b>{fmt(final.T)} K</b>
+        </span>
+      </div>
+      <p className="isotherm-caption">
+        {sameTemperature
+          ? "초기·최종 온도가 같아 두 등온선이 겹칩니다."
+          : "각 상태를 지나는 등온선: P = nRT / V"}
+      </p>
+      <div className="graph-work" aria-label="기체가 한 일 수치">
+        <div>
+          <span>
+            현재까지 한 일 <b>W</b>
+          </span>
+          <strong data-work="current">
+            {energy(current.W)} <small>kJ</small>
+          </strong>
+          <small>{fmt(current.W)} J</small>
+        </div>
+        <div>
+          <span>
+            전체 과정의 일 <b>W</b>
+          </span>
+          <strong data-work="total">
+            {energy(final.W)} <small>kJ</small>
+          </strong>
+          <small>{fmt(final.W)} J</small>
+        </div>
+        <p>기체 기준 · 팽창 + / 압축 − / 등적 0</p>
+      </div>
+    </>
   );
 }
 
@@ -752,26 +863,11 @@ export default function App() {
                       <Maximize2 size={14} />
                     </button>
                   </div>
-                  <PVChart
+                  <PVGraph
                     params={params}
                     process={process}
                     progress={progress}
                   />
-                  <div className="graph-legend">
-                    <span>
-                      <i />
-                      실험 경로
-                    </span>
-                    <span>
-                      <i className="area" />
-                      기체가 한 일 W
-                    </span>
-                    <span className="graph-note">
-                      {process === "isochoric"
-                        ? "ΔV = 0 → W = 0"
-                        : "W = ∫ P dV"}
-                    </span>
-                  </div>
                 </div>
               </div>
               <div className="playback">
@@ -1060,7 +1156,7 @@ export default function App() {
             <>
               <div className="eyebrow">PRESSURE–VOLUME DIAGRAM</div>
               <h2>{meta.name}의 P–V 그래프</h2>
-              <PVChart
+              <PVGraph
                 params={params}
                 process={process}
                 progress={progress}

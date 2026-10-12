@@ -55,6 +55,46 @@ try {
     page.locator(".process-card").filter({ hasText: name }).click();
   const values = async () =>
     page.locator(".state-card strong").allTextContents();
+  const assertIsotherms = async (finalTemperature) => {
+    const chart = page.locator(".graph-view .pv-chart");
+    assert.equal(
+      Number(
+        await chart
+          .locator('[data-isotherm="initial"]')
+          .getAttribute("data-temperature"),
+      ),
+      300,
+    );
+    assert.ok(
+      Math.abs(
+        Number(
+          await chart
+            .locator('[data-isotherm="final"]')
+            .getAttribute("data-temperature"),
+        ) - finalTemperature,
+      ) < 0.1,
+    );
+    const errors = await chart.evaluate((svg) =>
+      ["initial", "final"].map((name) => {
+        const curve = svg.querySelector(`[data-isotherm="${name}"]`);
+        const point = svg.querySelector(`[data-state="${name}"]`);
+        const targetX = Number(point.getAttribute("cx"));
+        const targetY = Number(point.getAttribute("cy"));
+        let low = 0,
+          high = curve.getTotalLength();
+        for (let i = 0; i < 35; i++) {
+          const mid = (low + high) / 2;
+          if (curve.getPointAtLength(mid).x < targetX) low = mid;
+          else high = mid;
+        }
+        return Math.abs(curve.getPointAtLength((low + high) / 2).y - targetY);
+      }),
+    );
+    assert.ok(
+      errors.every((error) => error < 0.5),
+      `Endpoint isotherms miss their states: ${errors}`,
+    );
+  };
   await page.getByRole("slider", { name: "기체의 양", exact: true }).fill("2");
   await page
     .getByRole("slider", { name: "초기 온도", exact: true })
@@ -62,25 +102,74 @@ try {
   await page.getByRole("slider", { name: "초기 부피", exact: true }).fill("40");
   assert.deepEqual(await values(), ["166.3 kPa", "40.0 L", "400.0 K"]);
   await page.getByRole("button", { name: "모든 실험 조건 초기화" }).click();
+  await assertIsotherms(300);
+  assert.equal(
+    await page.locator('[data-work="current"]').innerText(),
+    "0.00 kJ",
+  );
+  assert.equal(
+    await page.locator('[data-work="total"]').innerText(),
+    "+1.73 kJ",
+  );
+  const initialCurve = await page
+    .locator('[data-isotherm="initial"]')
+    .getAttribute("d");
+  assert.equal(
+    await page.locator('[data-isotherm="final"]').getAttribute("d"),
+    initialCurve,
+  );
+  await scrub(50);
+  assert.equal(
+    await page.locator('[data-work="current"]').innerText(),
+    "+1.01 kJ",
+  );
+  assert.equal(
+    await page.locator('[data-work="total"]').innerText(),
+    "+1.73 kJ",
+  );
   await scrub(100);
   assert.deepEqual(await values(), ["62.4 kPa", "40.0 L", "300.0 K"]);
   assert.match(await page.locator(".energy-equation").innerText(), /\+1.73/);
   await page.getByRole("button", { name: "결과 기록", exact: true }).click();
   assert.equal(await page.locator("tbody tr").count(), 1);
   await choose("등압 과정");
+  await assertIsotherms(600);
   await scrub(100);
   assert.deepEqual(await values(), ["124.7 kPa", "40.0 L", "600.0 K"]);
+  assert.equal(
+    await page.locator('[data-work="current"]').innerText(),
+    "+2.49 kJ",
+  );
   await page.getByRole("button", { name: "결과 기록", exact: true }).click();
   await choose("등적 과정");
+  await assertIsotherms(600);
   await scrub(100);
   assert.deepEqual(await values(), ["249.4 kPa", "20.0 L", "600.0 K"]);
   assert.match(await page.locator(".energy-item").nth(1).innerText(), /0.00/);
+  assert.equal(
+    await page.locator('[data-work="current"]').innerText(),
+    "0.00 kJ",
+  );
+  assert.equal(
+    await page.locator('[data-work="total"]').innerText(),
+    "0.00 kJ",
+  );
   await choose("단열 과정");
+  await assertIsotherms(189.0);
   await scrub(100);
   assert.deepEqual(await values(), ["39.3 kPa", "40.0 L", "189.0 K"]);
   await page.getByRole("slider", { name: "최종 부피 비율" }).fill("0.5");
+  await assertIsotherms(476.2);
   await scrub(100);
   assert.deepEqual(await values(), ["396.0 kPa", "10.0 L", "476.2 K"]);
+  assert.equal(
+    await page.locator('[data-work="current"]').innerText(),
+    "-2.20 kJ",
+  );
+  assert.equal(
+    await page.locator('[data-work="total"]').innerText(),
+    "-2.20 kJ",
+  );
   assert.match(
     await page.locator(".energy-item").nth(1).innerText(),
     /−|-2.20/,
@@ -110,6 +199,11 @@ try {
   assert.equal(await page.getByRole("dialog").count(), 0);
   await page.getByRole("button", { name: "압력 부피 그래프 확대" }).click();
   assert.equal(await page.locator(".modal .pv-chart").count(), 1);
+  assert.equal(await page.locator(".modal [data-isotherm]").count(), 2);
+  assert.equal(
+    await page.locator('.modal [data-work="total"]').innerText(),
+    "+1.73 kJ",
+  );
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   await page.getByRole("button", { name: "법칙 알아보기" }).click();
   assert.match(await page.getByRole("dialog").innerText(), /ΔU = Q − W/);
@@ -142,7 +236,7 @@ try {
   assert.deepEqual(await values(), ["249.4 kPa", "20.0 L", "600.0 K"]);
   assert.deepEqual(errors, []);
   console.log(
-    "PASS: all four processes, compression, playback, recording, persistence, CSV download, dialogs, mobile interaction and layout.",
+    "PASS: endpoint isotherms, current/total signed work, all four processes, compression, playback, recording, persistence, CSV download, dialogs, mobile interaction and layout.",
   );
 } finally {
   await browser?.close();
